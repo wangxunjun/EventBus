@@ -36,7 +36,7 @@ type Bus interface {
 // EventBus - box for handlers and callbacks.
 type EventBus struct {
 	handlers map[string][]*eventHandler
-	lock     sync.Mutex // a lock for the map
+	lock     sync.RWMutex // a lock for the map
 	wg       sync.WaitGroup
 }
 
@@ -45,14 +45,14 @@ type eventHandler struct {
 	flagOnce      bool
 	async         bool
 	transactional bool
-	sync.Mutex // lock for an event handler - useful for running async callbacks serially
+	sync.Mutex    // lock for an event handler - useful for running async callbacks serially
 }
 
 // New returns new EventBus with empty handlers.
 func New() Bus {
 	b := &EventBus{
 		make(map[string][]*eventHandler),
-		sync.Mutex{},
+		sync.RWMutex{},
 		sync.WaitGroup{},
 	}
 	return Bus(b)
@@ -106,8 +106,8 @@ func (bus *EventBus) SubscribeOnceAsync(topic string, fn interface{}) error {
 
 // HasCallback returns true if exists any callback subscribed to the topic.
 func (bus *EventBus) HasCallback(topic string) bool {
-	bus.lock.Lock()
-	defer bus.lock.Unlock()
+	bus.lock.RLock()
+	defer bus.lock.RUnlock()
 	_, ok := bus.handlers[topic]
 	if ok {
 		return len(bus.handlers[topic]) > 0
@@ -129,17 +129,13 @@ func (bus *EventBus) Unsubscribe(topic string, handler interface{}) error {
 
 // Publish executes callback defined for a topic. Any additional argument will be transferred to the callback.
 func (bus *EventBus) Publish(topic string, args ...interface{}) {
-	bus.lock.Lock() // will unlock if handler is not found or always after setUpPublish
-	defer bus.lock.Unlock()
+	bus.lock.RLock() // will unlock if handler is not found or always after setUpPublish
+	defer bus.lock.RUnlock()
 	if handlers, ok := bus.handlers[topic]; ok && 0 < len(handlers) {
-		// Handlers slice may be changed by removeHandler and Unsubscribe during iteration,
-		// so make a copy and iterate the copied slice.
-		copyHandlers := make([]*eventHandler, 0, len(handlers))
-		copyHandlers = append(copyHandlers, handlers...)
-		for i, handler := range copyHandlers {
-			if handler.flagOnce {
-				bus.removeHandler(topic, i)
-			}
+		for _, handler := range handlers {
+			// if handler.flagOnce {
+			// 	bus.removeHandler(topic, i)
+			// }
 			if !handler.async {
 				bus.doPublish(handler, topic, args...)
 			} else {
